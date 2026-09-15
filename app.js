@@ -17,7 +17,7 @@ var S = {
   filtro: { tipo: "todos", categoria: "todas", persona: "todas", q: "" },
   conteo: {}, arqueoNota: "", arqueoManual: "",
   pantalla: "cargando", loginErr: "", busy: false, ultimaSync: 0,
-  pendientes: [], enLinea: (typeof navigator !== "undefined" ? navigator.onLine !== false : true)
+  pendientes: [], rev: -1
 };
 
 /* ================= utilidades ================= */
@@ -99,6 +99,7 @@ function aplicarEstado(e, desdeCache) {
   S.categorias = e.categorias || [];
   S.config = e.config || {};
   S.totalMovimientos = e.totalMovimientos || 0;
+  if (typeof e.rev === "number") S.rev = e.rev;
   S.ultimaSync = desdeCache ? (e._ts || 0) : Date.now();
   if (!desdeCache) guardarEstadoCache(e);
 }
@@ -122,9 +123,39 @@ function leerEstadoCache() {
   try { return JSON.parse(localStorage.getItem("cf_estado") || "null"); } catch (e) { return null; }
 }
 
+/** ¿El usuario está tipeando ahora mismo? Si sí, no le rehacemos la pantalla. */
+function escribiendo() {
+  var a = document.activeElement;
+  return !!(a && a.tagName && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) &&
+            a.closest && a.closest("#main"));
+}
+
+function refrescarCabecera() {
+  var h = document.querySelector("#main header.bar");
+  if (h) h.outerHTML = cabeceraHTML();
+}
+
 function refrescar() {
-  return api("estado").then(function (e) { aplicarEstado(e); render(); })
-    .catch(function () {});
+  return api("estado").then(function (e) {
+    aplicarEstado(e);
+    if (escribiendo()) refrescarCabecera(); else render();
+  }).catch(function () {});
+}
+
+/**
+ * Sondeo barato: pregunta solo "¿cambió algo?" leyendo cinco filas del
+ * servidor. Solo si el número de revisión cambió se baja el historial entero.
+ * Apps Script tiene 90 minutos de ejecución por día: con la consulta completa
+ * cada 30 segundos, un teléfono olvidado abierto se comía un cuarto de la cuota.
+ */
+function comprobarVersion() {
+  return api("version").then(function (r) {
+    if (!r || !r.ok) return;
+    S.ultimaSync = Date.now();
+    if (r.rev !== S.rev) return refrescar();
+    if (typeof r.saldo === "number" && Math.abs(r.saldo - S.saldo) > 0.005) S.saldo = r.saldo;
+    refrescarCabecera();
+  }).catch(function () {});
 }
 
 /* ================= cola sin conexión =================
@@ -228,7 +259,8 @@ function sincronizar() {
   var lote = S.pendientes[0];
 
   return api("registrarLote", {
-    items: lote.items, tsClienteMs: lote.tsMs, offline: true, usuario: lote.usuario
+    items: lote.items, tsClienteMs: lote.tsMs, offline: true,
+    usuario: lote.usuario, loteCliente: lote.id
   }).then(function (r) {
     sincronizando = false;
     if (r && r.ok) aplicarEstado(r.estado);
@@ -246,11 +278,9 @@ function sincronizar() {
 }
 
 window.addEventListener("online", function () {
-  S.enLinea = true;
   if (S.pantalla === "app") { render(); sincronizar().then(refrescar); }
 });
 window.addEventListener("offline", function () {
-  S.enLinea = false;
   if (S.pantalla === "app") render();
 });
 
@@ -335,12 +365,12 @@ cargarBorrador();
 
 setInterval(function () {
   if (S.pantalla === "app" && !S.busy && !document.getElementById("ov") && !document.hidden) {
-    sincronizar().then(refrescar);
+    sincronizar().then(comprobarVersion);
   }
-}, 30000);
+}, 90000);
 
 document.addEventListener("visibilitychange", function () {
-  if (!document.hidden && S.pantalla === "app") sincronizar().then(refrescar);
+  if (!document.hidden && S.pantalla === "app") sincronizar().then(comprobarVersion);
 });
 
 /* ================= render ================= */
@@ -383,11 +413,11 @@ function pantallaHTML() {
       '<button class="btn primary wide" type="button" data-p="reintentar">Reintentar</button></div>';
   }
   if (S.pantalla === "cargando") {
-    return '<div class="center"><div class="eyebrow">Caja fuerte</div><h1 class="h-lg">Conectando…</h1></div>';
+    return '<div class="center"><div class="eyebrow">Caja Azul</div><h1 class="h-lg">Conectando…</h1></div>';
   }
 
   var recordado = ls("cf_nombre") || "";
-  return '<div class="center"><div class="eyebrow">Caja fuerte</div>' +
+  return '<div class="center"><div class="eyebrow">Caja Azul</div>' +
     '<h1 class="h-lg">Entrar</h1>' +
     '<p class="note" style="margin-top:6px">Tu nombre queda en cada movimiento que cargues.</p></div>' +
     '<form class="card stack" id="loginForm">' +
@@ -481,13 +511,15 @@ function cabeceraHTML() {
 
   return '<header class="bar">' +
     '<div class="bar-row"><div>' +
-      '<div class="eyebrow">' + esc(S.config.nombreCaja || "Saldo en caja fuerte") + '</div>' +
+      '<div class="eyebrow">' + esc(S.config.nombreCaja || "Caja Azul") + '</div>' +
       '<div class="saldo-val' + (saldo < 0 ? " neg" : "") + '">' + money(saldo) + '</div>' +
     '</div>' +
     '<button class="whoami" type="button" data-act="perfil">' +
       '<span class="avatar">' + esc(iniciales(S.nombre)) + '</span>' + esc(S.nombre.split(" ")[0]) +
     '</button></div>' +
-    '<div class="sync"><span class="dot ' + clase + '"></span>' + esc(texto) + '</div>' +
+    '<button class="sync" type="button" data-act="refrescar" title="Tocá para actualizar">' +
+      '<span class="dot ' + clase + '"></span>' + esc(texto) +
+      '<span class="recargar" aria-hidden="true">↻</span></button>' +
     '</header>';
 }
 
@@ -897,6 +929,11 @@ function alClic(e) {
   else if (act === "vermov") verMovimiento(b.dataset.id);
   else if (act === "exportar") exportarCSV();
   else if (act === "backup") hacerBackup();
+  else if (act === "refrescar") {
+    if (navigator.onLine === false) { toast("Sin conexión"); return; }
+    toast("Actualizando…");
+    sincronizar().then(refrescar);
+  }
   else if (act === "subir-cola") {
     if (navigator.onLine === false) { toast("Seguís sin conexión"); return; }
     toast("Subiendo…"); sincronizar();
@@ -979,30 +1016,35 @@ function guardarLote() {
 
   if (!items.length) { toast("Poné al menos un monto"); return; }
 
-  if (navigator.onLine === false) { encolarLote(items); return; }
+  // El id del lote lo genera el teléfono y viaja con el pedido. Si la respuesta
+  // se pierde y hay que reintentar, el servidor reconoce que ya lo grabó y no
+  // lo duplica. Si el envío se cae a la cola, se reutiliza el mismo id.
+  var loteId = uid();
+
+  if (navigator.onLine === false) { encolarLote(items, loteId); return; }
 
   S.busy = true; render();
-  api("registrarLote", { items: items }).then(function (r) {
+  api("registrarLote", { items: items, loteCliente: loteId }).then(function (r) {
     S.busy = false;
     if (r && r.ok) {
       aplicarEstado(r.estado);
       S.lineas = [nuevaLinea()]; ls("cf_draft", null);
       render();
-      hojaConfirmacion(r.guardados);
+      hojaConfirmacion(r.duplicado ? items.length : r.guardados);
     } else {
       render(); toast("No se pudo guardar: " + ((r && r.error) || "error"));
     }
   }).catch(function (err) {
     // Si falló la red (no el servidor), va a la cola en vez de perderse.
-    if (!err || !err.error) { encolarLote(items); return; }
+    if (!err || !err.error) { encolarLote(items, loteId); return; }
     S.busy = false; render();
     toast("No se pudo guardar: " + err.error);
   });
 }
 
-function encolarLote(items) {
+function encolarLote(items, loteId) {
   S.busy = true; render();
-  var lote = { id: uid(), tsMs: Date.now(), usuario: S.nombre, items: items };
+  var lote = { id: loteId || uid(), tsMs: Date.now(), usuario: S.nombre, items: items };
 
   colaGuardar(lote).then(function (res) {
     return cargarPendientes().then(function () {
@@ -1256,6 +1298,14 @@ function hojaEditar(m) {
         '<input class="inp" id="ed-concepto" maxlength="200" value="' + esc(m.concepto) + '"></div>' +
       '<div><label class="f" for="ed-dest">Entregado a / recibido de</label>' +
         '<input class="inp" id="ed-dest" maxlength="80" value="' + esc(m.destinatario) + '"></div>' +
+      (m.fotos.length
+        ? '<div><span class="f">Fotos adjuntas</span>' +
+          '<div class="cats">' + m.fotos.map(function (id, j) {
+            return '<button type="button" data-e="foto" data-id="' + esc(id) + '">' +
+              '📎 Foto ' + (j + 1) + '</button>';
+          }).join("") + '</div>' +
+          '<p class="note" style="margin-top:6px">Tocá una para marcarla; se borra al guardar el cambio.</p></div>'
+        : "") +
       '<div><label class="f" for="ed-motivo">Motivo del cambio (obligatorio)</label>' +
         '<input class="inp" id="ed-motivo" maxlength="200" placeholder="ej. me equivoqué al tipear el monto"></div>' +
       '<div class="err hidden" id="ed-err"></div>' +
@@ -1263,7 +1313,7 @@ function hojaEditar(m) {
       '<button class="btn wide" type="button" id="ov-close">Cancelar</button>' +
     '</div>');
 
-  var tipo = m.tipo, cat = m.categoria;
+  var tipo = m.tipo, cat = m.categoria, quitar = [];
 
   ov.addEventListener("click", function (e) {
     var b = e.target.closest("[data-e]"); if (!b) return;
@@ -1277,6 +1327,10 @@ function hojaEditar(m) {
       Array.prototype.forEach.call(ov.querySelectorAll('[data-e="cat"]'), function (x) {
         x.setAttribute("aria-pressed", String(x.dataset.c === cat));
       });
+    } else if (b.dataset.e === "foto") {
+      var id = b.dataset.id, i = quitar.indexOf(id);
+      if (i < 0) quitar.push(id); else quitar.splice(i, 1);
+      b.classList.toggle("quitar", quitar.indexOf(id) >= 0);
     }
   });
 
@@ -1291,7 +1345,8 @@ function hojaEditar(m) {
     api("editarMov", {
       id: m.id, tipo: tipo, monto: monto, categoria: cat,
       concepto: ov.querySelector("#ed-concepto").value,
-      destinatario: ov.querySelector("#ed-dest").value, motivo: motivo
+      destinatario: ov.querySelector("#ed-dest").value, motivo: motivo,
+      fotosQuitar: quitar
     }).then(function (r) {
       if (r && r.ok) { aplicarEstado(r.estado); cerrarHoja(); render(); toast("Movimiento editado y registrado"); }
       else { err.textContent = "No se pudo guardar."; err.classList.remove("hidden"); }

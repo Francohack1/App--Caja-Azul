@@ -35,7 +35,9 @@ var COLS = {
 
 var CATEGORIAS = ['Salarios','Proveedores','Servicios','Compras','Otros'];
 
-var LOCK_MAX_FALLOS = 5;        // fallos seguidos antes de bloquear
+var LOCK_MAX_FALLOS = 5;        // fallos desde un mismo teléfono antes de bloquearlo
+var LOCK_MAX_GLOBAL = 12;       // fallos desde cualquier origen antes de bloquear todo
+var LOCK_VENTANA_MIN = 15;      // ventana en la que se acumulan los fallos
 var LOCK_MINUTOS = 15;          // duración del bloqueo
 var TOKEN_DIAS = 30;            // validez de la sesión
 var MAX_MOV_RESPUESTA = 800;    // movimientos que viajan al teléfono
@@ -66,9 +68,12 @@ function doPost(e) {
     // A partir de acá hace falta un token válido
     var sesion = verificarToken_(req.token);
     if (!sesion) return json_({ ok: false, error: 'sesion_invalida' });
-    var usuario = String(req.usuario || sesion.nombre || 'desconocido').slice(0, 60);
+    // El nombre sale SIEMPRE del token firmado. Lo que venga en el cuerpo del
+    // pedido es declarativo y no se usa para atribuir nada.
+    var usuario = String(sesion.nombre || 'desconocido').slice(0, 60);
 
     switch (accion) {
+      case 'version':       return json_(version_());
       case 'estado':        return json_(estado_());
       case 'registrarLote': return json_(registrarLote_(req, usuario));
       case 'editarMov':     return json_(editarMov_(req, usuario));
@@ -171,8 +176,10 @@ function instalar() {
   setConfigSiVacio_('emails', Session.getEffectiveUser().getEmail());
   setConfigSiVacio_('saldoBase', '0');
   setConfigSiVacio_('limiteAlerta', '0');
-  setConfigSiVacio_('nombreCaja', 'Caja fuerte del local');
+  setConfigSiVacio_('nombreCaja', 'Caja Azul');
   setConfigSiVacio_('avisoCadaMovimiento', 'si');
+  setConfigSiVacio_('rev', '0');
+  setConfigSiVacio_('saldoCache', '0');
 
   var props = PropertiesService.getScriptProperties();
   if (!props.getProperty('hmac')) {
@@ -253,20 +260,55 @@ function verificarToken_(token) {
   return { nombre: campos[0] };
 }
 
+/**
+ * Bloqueo por intentos. Hay dos contadores:
+ *  · uno por teléfono, que corta rápido el caso normal (alguien que no se
+ *    acuerda de la contraseña);
+ *  · uno global, porque el id de teléfono lo genera el propio navegador y
+ *    quien quiera probar contraseñas puede cambiarlo en cada intento. Sin el
+ *    contador global, el bloqueo se saltea solo.
+ */
+var CLAVE_GLOBAL = 'fallos_global';
+
 function claveBloqueo_(disp) {
   return 'fallos_' + String(disp || 'anon').replace(/[^\w-]/g, '').slice(0, 40);
 }
 
+function leerBloqueo_(clave) {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(clave) || '{}'); }
+  catch (e) { return {}; }
+}
+
+function bloqueadoHasta_(clave) {
+  var r = leerBloqueo_(clave);
+  return (r.bloqueadoHasta && Date.now() < r.bloqueadoHasta) ? r.bloqueadoHasta : 0;
+}
+
+/** Suma un fallo a ese contador y bloquea si pasó del máximo. */
+function sumarFallo_(clave, max) {
+  var r = leerBloqueo_(clave), ahora = Date.now();
+  if (!r.desde || ahora - r.desde > LOCK_VENTANA_MIN * 60000) r = { desde: ahora, fallos: 0 };
+  r.fallos = (r.fallos || 0) + 1;
+
+  var bloqueo = false;
+  if (r.fallos >= max) {
+    r.bloqueadoHasta = ahora + LOCK_MINUTOS * 60000;
+    r.fallos = 0; r.desde = ahora;
+    bloqueo = true;
+  }
+  PropertiesService.getScriptProperties().setProperty(clave, JSON.stringify(r));
+  return { bloqueo: bloqueo, restantes: Math.max(0, max - (r.fallos || 0)) };
+}
+
 function login_(req) {
   var props = PropertiesService.getScriptProperties();
-  var clave = claveBloqueo_(req.dispositivo);
-  var reg = {};
-  try { reg = JSON.parse(props.getProperty(clave) || '{}'); } catch (e) {}
+  var claveDisp = claveBloqueo_(req.dispositivo);
 
-  if (reg.bloqueadoHasta && Date.now() < reg.bloqueadoHasta) {
-    var min = Math.ceil((reg.bloqueadoHasta - Date.now()) / 60000);
-    auditar_(req.nombre || '—', 'login_bloqueado', 'acceso', '', '', '', 'dispositivo ' + (req.dispositivo || '?'));
-    return { ok: false, error: 'bloqueado', minutos: min };
+  var hasta = Math.max(bloqueadoHasta_(CLAVE_GLOBAL), bloqueadoHasta_(claveDisp));
+  if (hasta) {
+    auditar_(req.nombre || '—', 'login_bloqueado', 'acceso', '', '', '',
+             'dispositivo ' + (req.dispositivo || '?'));
+    return { ok: false, error: 'bloqueado', minutos: Math.ceil((hasta - Date.now()) / 60000) };
   }
 
   var nombre = String(req.nombre || '').trim().slice(0, 40);
@@ -276,41 +318,44 @@ function login_(req) {
   if (!nombre) return { ok: false, error: 'falta_nombre' };
 
   if (!esperado || hash_(pass + ':' + getConfig_('salt')) !== esperado) {
-    reg.fallos = (reg.fallos || 0) + 1;
-    if (reg.fallos >= LOCK_MAX_FALLOS) {
-      reg.bloqueadoHasta = Date.now() + LOCK_MINUTOS * 60000;
-      reg.fallos = 0;
-      avisarIntrusion_(nombre, req.dispositivo);
-    }
-    props.setProperty(clave, JSON.stringify(reg));
-    auditar_(nombre, 'login_fallido', 'acceso', '', '', '', 'dispositivo ' + (req.dispositivo || '?'));
-    return {
-      ok: false,
-      error: 'password',
-      restantes: Math.max(0, LOCK_MAX_FALLOS - (reg.fallos || 0))
-    };
+    var d = sumarFallo_(claveDisp, LOCK_MAX_FALLOS);
+    var g = sumarFallo_(CLAVE_GLOBAL, LOCK_MAX_GLOBAL);
+    if (d.bloqueo || g.bloqueo) avisarIntrusion_(nombre, req.dispositivo, g.bloqueo);
+    auditar_(nombre, 'login_fallido', 'acceso', '', '', '',
+             'dispositivo ' + (req.dispositivo || '?'));
+    return { ok: false, error: 'password', restantes: Math.min(d.restantes, g.restantes) };
   }
 
-  props.deleteProperty(clave);
+  // Entrada correcta: se limpia este teléfono y el acumulado global, para que
+  // un despiste de alguien del equipo no vaya sumando hacia el bloqueo general.
+  props.deleteProperty(claveDisp);
+  if (!bloqueadoHasta_(CLAVE_GLOBAL)) props.deleteProperty(CLAVE_GLOBAL);
+
   registrarPersona_(nombre);
   auditar_(nombre, 'login', 'acceso', '', '', '', 'dispositivo ' + (req.dispositivo || '?'));
 
   return { ok: true, token: crearToken_(nombre), nombre: nombre, estado: estado_() };
 }
 
-function avisarIntrusion_(nombre, disp) {
+function avisarIntrusion_(nombre, disp, esGlobal) {
   var destinos = getConfig_('emails');
   if (!destinos) return;
   try {
     MailApp.sendEmail({
       to: destinos,
-      subject: '⚠️ Caja fuerte — ' + LOCK_MAX_FALLOS + ' intentos fallidos de acceso',
-      htmlBody: '<p>Se bloqueó el acceso durante ' + LOCK_MINUTOS + ' minutos después de ' +
-        LOCK_MAX_FALLOS + ' contraseñas incorrectas seguidas.</p>' +
+      subject: '⚠️ Caja — acceso bloqueado por intentos fallidos',
+      htmlBody: '<p>Se bloqueó el acceso durante ' + LOCK_MINUTOS + ' minutos.</p>' +
+        '<p>' + (esGlobal
+          ? 'Se bloqueó <b>para todos</b>: hubo ' + LOCK_MAX_GLOBAL + ' contraseñas incorrectas ' +
+            'desde distintos orígenes en menos de ' + LOCK_VENTANA_MIN + ' minutos. ' +
+            'Eso no es alguien que se olvidó la contraseña.'
+          : 'Se bloqueó <b>ese teléfono</b> después de ' + LOCK_MAX_FALLOS +
+            ' contraseñas incorrectas.') + '</p>' +
         '<p>Nombre usado: <b>' + escHtml_(nombre || '—') + '</b><br>' +
         'Dispositivo: <code>' + escHtml_(disp || '—') + '</code><br>' +
         'Hora: ' + fechaLarga_(new Date()) + '</p>' +
-        '<p>Si no fuiste vos ni nadie del equipo, cambiá la contraseña desde Ajustes.</p>'
+        '<p>Si no fue nadie del equipo, cambiá la contraseña desde Ajustes: ' +
+        'eso además cierra todas las sesiones abiertas.</p>'
     });
   } catch (e) {}
 }
@@ -428,6 +473,7 @@ function estado_() {
 
   return {
     ok: true,
+    rev: Number(getConfig_('rev')) || 0,
     saldo: redondear_(saldo),
     totalMovimientos: movs.length,
     movimientos: recientes,
@@ -447,6 +493,40 @@ function estado_() {
 }
 
 function redondear_(n) { return Math.round((Number(n) || 0) * 100) / 100; }
+
+/**
+ * Sube el contador de revisión y guarda el saldo en Config.
+ * Lo llama toda operación que escribe. Sirve para que los teléfonos pregunten
+ * "¿cambió algo?" leyendo cinco filas en vez de la hoja entera.
+ */
+function bumpRev_(saldo) {
+  var r = (Number(getConfig_('rev')) || 0) + 1;
+  setConfig_('rev', String(r));
+  if (saldo !== undefined && saldo !== null) setConfig_('saldoCache', String(redondear_(saldo)));
+  return r;
+}
+
+/**
+ * Respuesta barata para el sondeo: solo lee la hoja Config.
+ * Si alguien editó las filas a mano, `saldoCache` puede quedar desfasado; se
+ * corrige solo en la siguiente llamada a `estado`, que recalcula desde cero.
+ */
+function version_() {
+  // La primera vez que se pregunta, todavía no hay saldo cacheado: se calcula
+  // una sola vez y queda guardado. Si no, la cabecera del teléfono mostraría
+  // cero hasta el primer movimiento.
+  var cache = getConfig_('saldoCache');
+  if (String(cache) === '') {
+    cache = String(redondear_(saldoActual_()));
+    setConfig_('saldoCache', cache);
+  }
+  return {
+    ok: true,
+    rev: Number(getConfig_('rev')) || 0,
+    saldo: Number(cache) || 0,
+    servidorMs: Date.now()
+  };
+}
 
 /* ================================================================
  *  MOVIMIENTOS
@@ -480,7 +560,21 @@ function registrarLote_(req, usuario) {
   try {
     var ahora = new Date();
     var cuando = horaDelLote_(req, ahora);
-    var loteId = Utilities.getUuid().slice(0, 8);
+
+    // El teléfono manda su propio id de lote. Si ya lo escribimos antes —porque
+    // la respuesta se perdió y el teléfono reintentó— no lo volvemos a grabar.
+    // Sin esto, una conexión que se corta justo después de escribir duplica
+    // movimientos, que en un libro de caja es el peor error posible.
+    var loteId = String(req.loteCliente || '').slice(0, 40).replace(/[^\w-]/g, '');
+    if (loteId) {
+      var yaEstaba = leerTabla_('MOV').some(function (m) { return String(m.loteId) === loteId; });
+      if (yaEstaba) {
+        return { ok: true, duplicado: true, loteId: loteId, guardados: 0, estado: estado_() };
+      }
+    } else {
+      loteId = Utilities.getUuid().slice(0, 8);
+    }
+
     var guardados = [];
 
     for (var i = 0; i < items.length; i++) {
@@ -519,11 +613,14 @@ function registrarLote_(req, usuario) {
 
     if (!guardados.length) return { ok: false, error: 'sin_montos_validos' };
 
+    var declarado = String(req.usuario || '').slice(0, 60);
     auditar_(usuario, 'alta_lote', 'movimiento', loteId, '', JSON.stringify(guardados),
              guardados.length + ' movimientos' +
-             (cuando.offline ? ' · cargados sin conexión el ' + fechaLarga_(new Date(cuando.ms)) : ''));
+             (cuando.offline ? ' · cargados sin conexión el ' + fechaLarga_(new Date(cuando.ms)) : '') +
+             (declarado && declarado !== usuario ? ' · el teléfono decía "' + declarado + '"' : ''));
 
     var nuevoSaldo = saldoActual_();
+    bumpRev_(nuevoSaldo);
     if (getConfig_('avisoCadaMovimiento') !== 'no') {
       mailMovimientos_(usuario, guardados, nuevoSaldo, loteId, cuando);
     }
@@ -562,7 +659,10 @@ function editarMov_(req, usuario) {
     if (!motivo) return { ok: false, error: 'falta_motivo' };
 
     var fotosNuevas = guardarFotos_(req.fotosNuevas || [], String(m.id));
-    var fotos = String(m.fotos || '').split(',').filter(Boolean).concat(fotosNuevas);
+    var quitar = (req.fotosQuitar || []).map(String);
+    var fotosAntes = String(m.fotos || '').split(',').filter(Boolean);
+    var fotos = fotosAntes.filter(function (id) { return quitar.indexOf(id) < 0; }).concat(fotosNuevas);
+    quitar.forEach(borrarFoto_);
 
     actualizarFila_('MOV', m._fila, {
       tipo: despues.tipo, monto: despues.monto, categoria: despues.categoria,
@@ -572,9 +672,13 @@ function editarMov_(req, usuario) {
     });
 
     auditar_(usuario, 'edicion', 'movimiento', String(m.id),
-             JSON.stringify(antes), JSON.stringify(despues), motivo);
+             JSON.stringify(antes), JSON.stringify(despues),
+             motivo +
+             (quitar.length ? ' · quitó ' + quitar.length + ' foto(s)' : '') +
+             (fotosNuevas.length ? ' · agregó ' + fotosNuevas.length + ' foto(s)' : ''));
 
     var nuevoSaldo = saldoActual_();
+    bumpRev_(nuevoSaldo);
     mailEdicion_(usuario, String(m.id), antes, despues, motivo, nuevoSaldo);
     revisarLimite_(nuevoSaldo);
 
@@ -610,6 +714,7 @@ function anularMov_(req, usuario) {
              JSON.stringify({ estado: nuevoEstado }), motivo);
 
     var nuevoSaldo = saldoActual_();
+    bumpRev_(nuevoSaldo);
     mailSimple_('Caja fuerte — movimiento ' + (nuevoEstado === 'anulado' ? 'anulado' : 'reactivado'),
       '<p><b>' + escHtml_(usuario) + '</b> ' + (nuevoEstado === 'anulado' ? 'anuló' : 'reactivó') +
       ' un movimiento de <b>' + dinero_(Number(m.monto)) + '</b> (' + escHtml_(String(m.concepto || '—')) + ').</p>' +
@@ -642,6 +747,16 @@ function guardarFotos_(fotos, movId) {
     } catch (e) {}
   }
   return ids;
+}
+
+/** Manda la foto a la papelera, solo si está en la carpeta de la app. */
+function borrarFoto_(id) {
+  try {
+    var f = DriveApp.getFileById(String(id));
+    var padre = getConfig_('carpetaFotos'), ok = false, it = f.getParents();
+    while (it.hasNext()) if (it.next().getId() === padre) { ok = true; break; }
+    if (ok) f.setTrashed(true);
+  } catch (e) {}
 }
 
 function leerFoto_(req) {
@@ -702,6 +817,7 @@ function guardarArqueo_(req, usuario) {
              JSON.stringify({ esperado: esperado, contado: contado, diferencia: dif }),
              String(req.nota || ''));
 
+    bumpRev_(saldoActual_());
     mailArqueo_(usuario, esperado, contado, dif, String(req.nota || ''), !!ajusteId);
 
     return { ok: true, diferencia: dif, estado: estado_() };
@@ -719,6 +835,7 @@ function addPersona_(req, usuario) {
   if (nombre.length < 2) return { ok: false, error: 'nombre_corto' };
   registrarPersona_(nombre);
   auditar_(usuario, 'alta_persona', 'persona', nombre, '', '', '');
+  bumpRev_();
   return { ok: true, estado: estado_() };
 }
 
@@ -751,7 +868,7 @@ function setConfigPublica_(req, usuario) {
     return { ok: true, sesionCerrada: true };
   }
 
-  if (hechos.length) auditar_(usuario, 'cambio_config', 'config', '', '', '', hechos.join(' · '));
+  if (hechos.length) { auditar_(usuario, 'cambio_config', 'config', '', '', '', hechos.join(' · ')); bumpRev_(); }
   return { ok: true, estado: estado_() };
 }
 

@@ -1,4 +1,4 @@
-# Caja Fuerte
+# Caja Azul
 
 App para llevar el control de la caja fuerte de un local: quién metió o sacó dinero, cuánto, por qué, con foto, y si el recuento real cuadra.
 
@@ -23,7 +23,7 @@ Funciona desde el móvil de cualquier persona del equipo con una contraseña com
 | **Aviso de tope** | Si el efectivo pasa del importe que fijes, llega un mail para llevarlo al banco. |
 | **Copias** | CSV automático a Drive cada madrugada, y CSV a mano cuando quieras. |
 | **Funciona sin señal** | Se instala en el móvil como una app. Abre sin conexión con el último saldo e historial, deja cargar movimientos con sus fotos, y los sube solos cuando vuelve la red. |
-| **Control de acceso** | La contraseña se valida en el servidor. Tras 5 fallos seguidos el acceso se bloquea 15 minutos y te llega un aviso. |
+| **Control de acceso** | La contraseña se valida en el servidor. 5 fallos bloquean ese teléfono y 12 desde cualquier origen bloquean todo, 15 minutos, con aviso por mail. |
 
 ---
 
@@ -33,7 +33,7 @@ Son 15 minutos. Hacelo una sola vez.
 
 ### 1 — Crear la hoja y pegar el script
 
-1. Entrá en [sheets.new](https://sheets.new) y ponele un nombre, por ejemplo **Caja Fuerte**.
+1. Entrá en [sheets.new](https://sheets.new) y ponele un nombre, por ejemplo **Caja Azul**.
 2. Menú **Extensiones → Apps Script**.
 3. Borrá todo lo que haya en `Código.gs` y pegá el contenido de [`backend/Codigo.gs`](backend/Codigo.gs).
 4. Guardá con `Ctrl+S`.
@@ -121,6 +121,14 @@ Si los seis pasos salen bien, está todo conectado.
 
 ---
 
+## Actualizar a una versión nueva
+
+1. **Backend**: pegá el `backend/Codigo.gs` nuevo en el editor, guardá y ejecutá **`instalar()`**. Es seguro: respeta la contraseña, las carpetas y los ajustes; solo agrega lo que falte.
+2. **Publicar el cambio**: Implementar → **Gestionar implementaciones** → editar (lápiz) → **Versión: Nueva** → Implementar. La URL no cambia. Si creás una implementación nueva en vez de editar la existente, te da otra URL y tenés que rehacer el `config.js`.
+3. **Frontend**: subí los archivos y **subí `VERSION` en `sw.js`** (`'v2'` → `'v3'`). Sin eso, los teléfonos que ya tienen la app instalada siguen con la versión vieja.
+
+---
+
 ## Cada día
 
 - **Cargar movimientos** — elegí Ingreso o Retiro, poné el monto, tocá la categoría, escribí el concepto y sacá la foto. «Agregar otro monto» para seguir sumando líneas. Todo se guarda de una.
@@ -149,6 +157,12 @@ backend/
   Codigo.gs           el Apps Script entero
 ```
 
+### El sondeo y la cuota de Google
+
+Apps Script da 90 minutos de ejecución por día en cuentas gratuitas, y leer la hoja entera cuesta un par de segundos. Por eso la app no pregunta el estado completo: cada 90 segundos pregunta solo un número de revisión y el saldo, leyendo cinco filas de `Config`. Baja el historial entero únicamente cuando ese número cambió, o cuando tocás la línea de estado de la cabecera para forzarlo.
+
+Cada operación que escribe sube el contador `rev` y guarda el saldo en `saldoCache`. Si alguien edita la hoja a mano, ese saldo queda desfasado hasta la siguiente consulta completa, que lo recalcula desde las filas.
+
 ### Cómo funciona el modo sin conexión
 
 El `sw.js` guarda la app (HTML, CSS, JS, fuentes) en el teléfono, así que abre sin red. **Los datos nunca se cachean**: las llamadas al Apps Script van siempre al servidor. Lo que hace la app es guardar el último estado recibido en `localStorage` para tener algo que mostrar, y meter los movimientos nuevos en una cola en IndexedDB —que aguanta las fotos— hasta que haya señal.
@@ -176,7 +190,9 @@ Podés mirar y filtrar todo directamente en la hoja de cálculo, pero **no edite
 - La contraseña nunca se guarda: solo su hash SHA-256 con salt.
 - La validación es del lado del servidor. Alterar el JavaScript en el navegador no sirve de nada.
 - La sesión es un token firmado con HMAC que caduca a los 30 días. Al cambiar la contraseña, todas las sesiones abiertas se cierran.
-- 5 fallos seguidos bloquean 15 minutos y disparan un mail de aviso.
+- Dos contadores de intentos fallidos: 5 bloquean ese teléfono, 12 en 15 minutos bloquean el acceso para todos. El segundo existe porque el identificador de teléfono lo genera el propio navegador, y sin él bastaba con cambiarlo en cada intento para no bloquearse nunca. Los dos avisan por mail.
+- El nombre de quien carga cada movimiento sale del token firmado, no del cuerpo del pedido: no se puede firmar algo con el nombre de otro. Si el teléfono declara un nombre distinto, queda anotado en la auditoría.
+- Cada lote lleva un identificador generado por el teléfono. Si la respuesta del servidor se pierde justo después de escribir y el teléfono reintenta, el servidor lo reconoce y no lo duplica.
 - Las fotos están en tu Drive sin compartir. Viajan por la API, autenticadas.
 - La marca de tiempo la pone el servidor, así que cambiar la hora del móvil no altera el registro. La excepción es lo cargado sin conexión, que usa la hora del teléfono para caer en el día correcto: esas filas quedan marcadas con `offline = si` y guardan aparte, en `tsServidorISO`, cuándo llegaron de verdad. La hora del teléfono solo se acepta dentro de una ventana razonable (hasta 6 horas hacia adelante, 30 días hacia atrás); fuera de eso manda el servidor.
 - Nada se borra nunca: se anula, y queda el rastro.
@@ -196,6 +212,7 @@ Podés mirar y filtrar todo directamente en la hoja de cálculo, pero **no edite
 | «Falta conectar el backend» | No pegaste la URL en `config.js`, o quedó el texto de ejemplo. |
 | «No se pudo conectar» | La implementación no está como *Cualquier usuario*, o la URL no termina en `/exec`. |
 | Los mails no llegan | Revisá los destinatarios en Ajustes y mirá la carpeta de spam. Gmail permite unos 100 mails por día en cuentas gratuitas. |
+| La app deja de responder a media tarde y al otro día anda | Se agotó la cuota de Apps Script (90 min de ejecución por día en cuentas gratuitas). Subí el intervalo del sondeo en `app.js` o mirá quién dejó la app abierta todo el día. |
 | Cambiaste el script y no se nota | Apps Script sirve la versión implementada, no la guardada. **Implementar → Gestionar implementaciones → editar → Versión: Nueva**. La URL no cambia. |
 | Cambiaste el frontend y los móviles siguen con lo viejo | El service worker guarda la versión anterior. Subí `VERSION` en `sw.js` (`'v1'` → `'v2'`) y volvé a publicar. |
 | No aparece la opción de instalar | Tiene que ser HTTPS. En `file://` o por IP local no va. |
@@ -208,7 +225,9 @@ Podés mirar y filtrar todo directamente en la hoja de cálculo, pero **no edite
 
 - **Categorías**: la constante `CATEGORIAS` al principio de `Codigo.gs`.
 - **Hora de la copia diaria**: `crearDisparadores()`, y volvé a ejecutarla.
-- **Intentos y bloqueo**: `LOCK_MAX_FALLOS` y `LOCK_MINUTOS`.
+- **Intentos y bloqueo**: `LOCK_MAX_FALLOS`, `LOCK_MAX_GLOBAL`, `LOCK_VENTANA_MIN` y `LOCK_MINUTOS`.
 - **Duración de la sesión**: `TOKEN_DIAS`.
+- **Cada cuánto sondea**: el `setInterval` de 90000 ms en `app.js`.
+- **Nombre de la app en el teléfono**: `<title>` en `index.html` y `name` / `short_name` en `manifest.webmanifest`. El texto de la cabecera es `nombreCaja`, en Ajustes.
 - **Moneda**: `moneda` y `locale` en `config.js`.
 - **Qué se guarda para abrir sin red**: la lista `ARCHIVOS` en `sw.js`.
