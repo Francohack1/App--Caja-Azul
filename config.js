@@ -5,7 +5,7 @@
    ------------------------------------------------------------------ */
 
 window.CAJA_CONFIG = {
-  API: 'https://script.google.com/macros/s/AKfycbwaz_HfJp6_vUZDKakug_P3IiSMcx2hpNgJvs9ayGV90YdirThoRpb-jVtPnzi2Oo_zgw/exec',
+  API: 'https://script.google.com/macros/s/AKfycbyLBwntNtNxqF3yt788XoQ_xNtinRH4zQ5edGw1LDf3ceT_0czHaSVrF8rB0jyoILvyUg/exec',
 
   // Moneda e idioma para mostrar los importes.
   moneda: 'EUR',
