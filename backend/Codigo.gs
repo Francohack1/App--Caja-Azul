@@ -35,19 +35,26 @@ var COLS = {
 
 var CATEGORIAS = ['Salarios','Proveedores','Servicios','Compras','Otros'];
 
+/**
+ * Versión del backend. Se devuelve en `doGet` y en `ping`, sin necesidad de
+ * sesión, para poder comprobar desde fuera qué código está publicado de verdad
+ * en un despliegue. Súbila cada vez que cambies este archivo.
+ */
+var APP_VERSION = 5;
+
 var LOCK_MAX_FALLOS = 5;        // fallos desde un mismo teléfono antes de bloquearlo
 var LOCK_MAX_GLOBAL = 12;       // fallos desde cualquier origen antes de bloquear todo
 var LOCK_VENTANA_MIN = 15;      // ventana en la que se acumulan los fallos
 var LOCK_MINUTOS = 15;          // duración del bloqueo
 var TOKEN_DIAS = 30;            // validez de la sesión
-var MAX_MOV_RESPUESTA = 800;    // movimientos que viajan al teléfono
+var MAX_MOV_RESPUESTA = 250;    // movimientos que viajan al teléfono
 
 /* ================================================================
  *  ENTRADAS HTTP
  * ================================================================ */
 
 function doGet(e) {
-  return json_({ ok: true, servicio: 'Caja Fuerte', version: 2 });
+  return json_({ ok: true, servicio: 'Caja Azul', version: APP_VERSION });
 }
 
 function doPost(e) {
@@ -62,7 +69,7 @@ function doPost(e) {
 
   try {
     // Acciones que no requieren sesión iniciada
-    if (accion === 'ping')  return json_({ ok: true, instalado: estaInstalado_() });
+    if (accion === 'ping')  return json_({ ok: true, instalado: estaInstalado_(), version: APP_VERSION });
     if (accion === 'login') return json_(login_(req));
 
     // A partir de acá hace falta un token válido
@@ -619,14 +626,18 @@ function registrarLote_(req, usuario) {
              (cuando.offline ? ' · cargados sin conexión el ' + fechaLarga_(new Date(cuando.ms)) : '') +
              (declarado && declarado !== usuario ? ' · el teléfono decía "' + declarado + '"' : ''));
 
-    var nuevoSaldo = saldoActual_();
-    bumpRev_(nuevoSaldo);
-    if (getConfig_('avisoCadaMovimiento') !== 'no') {
-      mailMovimientos_(usuario, guardados, nuevoSaldo, loteId, cuando);
-    }
-    revisarLimite_(nuevoSaldo);
+    // estado_() ya recorre la hoja y devuelve el saldo: se usa ese número en vez
+    // de volver a leerla entera con saldoActual_(). Cada lectura de más son
+    // segundos, porque la latencia de Apps Script no baja de ~1,5 s por llamada.
+    var est = estado_();
+    est.rev = bumpRev_(est.saldo);
 
-    return { ok: true, loteId: loteId, guardados: guardados.length, estado: estado_() };
+    if (getConfig_('avisoCadaMovimiento') !== 'no') {
+      mailMovimientos_(usuario, guardados, est.saldo, loteId, cuando);
+    }
+    revisarLimite_(est.saldo);
+
+    return { ok: true, loteId: loteId, guardados: guardados.length, estado: est };
   } finally {
     lock.releaseLock();
   }
@@ -677,12 +688,12 @@ function editarMov_(req, usuario) {
              (quitar.length ? ' · quitó ' + quitar.length + ' foto(s)' : '') +
              (fotosNuevas.length ? ' · agregó ' + fotosNuevas.length + ' foto(s)' : ''));
 
-    var nuevoSaldo = saldoActual_();
-    bumpRev_(nuevoSaldo);
-    mailEdicion_(usuario, String(m.id), antes, despues, motivo, nuevoSaldo);
-    revisarLimite_(nuevoSaldo);
+    var est = estado_();
+    est.rev = bumpRev_(est.saldo);
+    mailEdicion_(usuario, String(m.id), antes, despues, motivo, est.saldo);
+    revisarLimite_(est.saldo);
 
-    return { ok: true, estado: estado_() };
+    return { ok: true, estado: est };
   } finally {
     lock.releaseLock();
   }
@@ -713,15 +724,16 @@ function anularMov_(req, usuario) {
              JSON.stringify({ estado: String(m.estado), monto: Number(m.monto) }),
              JSON.stringify({ estado: nuevoEstado }), motivo);
 
-    var nuevoSaldo = saldoActual_();
-    bumpRev_(nuevoSaldo);
+    var est = estado_();
+    est.rev = bumpRev_(est.saldo);
+    var nuevoSaldo = est.saldo;
     mailSimple_('Caja fuerte — movimiento ' + (nuevoEstado === 'anulado' ? 'anulado' : 'reactivado'),
       '<p><b>' + escHtml_(usuario) + '</b> ' + (nuevoEstado === 'anulado' ? 'anuló' : 'reactivó') +
       ' un movimiento de <b>' + dinero_(Number(m.monto)) + '</b> (' + escHtml_(String(m.concepto || '—')) + ').</p>' +
       '<p>Motivo: ' + escHtml_(motivo) + '</p>' +
       '<p>Saldo en caja fuerte: <b>' + dinero_(nuevoSaldo) + '</b></p>');
 
-    return { ok: true, estado: estado_() };
+    return { ok: true, estado: est };
   } finally {
     lock.releaseLock();
   }
@@ -817,10 +829,11 @@ function guardarArqueo_(req, usuario) {
              JSON.stringify({ esperado: esperado, contado: contado, diferencia: dif }),
              String(req.nota || ''));
 
-    bumpRev_(saldoActual_());
+    var est = estado_();
+    est.rev = bumpRev_(est.saldo);
     mailArqueo_(usuario, esperado, contado, dif, String(req.nota || ''), !!ajusteId);
 
-    return { ok: true, diferencia: dif, estado: estado_() };
+    return { ok: true, diferencia: dif, estado: est };
   } finally {
     lock.releaseLock();
   }
@@ -936,7 +949,7 @@ function csv_() {
 function backupAhora_(usuario) {
   try {
     var carpeta = DriveApp.getFolderById(getConfig_('carpetaBackups'));
-    var nombre = 'caja-fuerte-' +
+    var nombre = 'caja-azul-' +
       Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd-HHmm') + '.csv';
     var f = carpeta.createFile(Utilities.newBlob(csv_(), 'text/csv', nombre));
     auditar_(usuario || 'automático', 'backup', 'archivo', f.getId(), '', '', nombre);

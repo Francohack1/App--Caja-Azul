@@ -125,7 +125,8 @@ Si los seis pasos salen bien, está todo conectado.
 
 1. **Backend**: pegá el `backend/Codigo.gs` nuevo en el editor, guardá y ejecutá **`instalar()`**. Es seguro: respeta la contraseña, las carpetas y los ajustes; solo agrega lo que falte.
 2. **Publicar el cambio**: Implementar → **Gestionar implementaciones** → editar (lápiz) → **Versión: Nueva** → Implementar. La URL no cambia. Si creás una implementación nueva en vez de editar la existente, te da otra URL y tenés que rehacer el `config.js`.
-3. **Frontend**: subí los archivos y **subí `VERSION` en `sw.js`** (`'v2'` → `'v3'`). Sin eso, los teléfonos que ya tienen la app instalada siguen con la versión vieja.
+3. **Comprobar**: abrí la URL del `/exec` en el navegador. El `version` que devuelve tiene que coincidir con el `APP_VERSION` del `Codigo.gs` que pegaste. Si no coincide, el despliegue está sirviendo código viejo.
+4. **Frontend**: subí los archivos y **subí `VERSION` en `sw.js`** (`'v2'` → `'v3'`). Sin eso, los teléfonos que ya tienen la app instalada siguen con la versión vieja.
 
 ---
 
@@ -227,6 +228,7 @@ Podés mirar y filtrar todo directamente en la hoja de cálculo, pero **no edite
 - **Hora de la copia diaria**: `crearDisparadores()`, y volvé a ejecutarla.
 - **Intentos y bloqueo**: `LOCK_MAX_FALLOS`, `LOCK_MAX_GLOBAL`, `LOCK_VENTANA_MIN` y `LOCK_MINUTOS`.
 - **Duración de la sesión**: `TOKEN_DIAS`.
+- **Número de versión del backend**: `APP_VERSION`, al principio de `Codigo.gs`. Subilo con cada cambio.
 - **Cada cuánto sondea**: el `setInterval` de 90000 ms en `app.js`.
 - **Nombre de la app en el teléfono**: `<title>` en `index.html` y `name` / `short_name` en `manifest.webmanifest`. El texto de la cabecera es `nombreCaja`, en Ajustes.
 - **Moneda**: `moneda` y `locale` en `config.js`.

@@ -14,7 +14,7 @@ var S = {
   saldo: 0, movimientos: [], arqueos: [], personas: [], categorias: [],
   config: {}, totalMovimientos: 0,
   lineas: [], tipoDefault: "ingreso",
-  filtro: { tipo: "todos", categoria: "todas", persona: "todas", q: "" },
+  filtro: { tipo: "todos", categoria: "todas", persona: "todas", q: "" }, verTodo: false,
   conteo: {}, arqueoNota: "", arqueoManual: "",
   pantalla: "cargando", loginErr: "", busy: false, ultimaSync: 0,
   pendientes: [], rev: -1
@@ -634,6 +634,11 @@ function vistaHistorial() {
       && (!f.q || (m.concepto + " " + m.destinatario).toLowerCase().indexOf(f.q.toLowerCase()) >= 0);
   });
 
+  var TOPE = 120;
+  var recortado = !S.verTodo && lista.length > TOPE;
+  var restantes = recortado ? lista.length - TOPE : 0;
+  if (recortado) lista = lista.slice(0, TOPE);
+
   var dias = [];
   lista.forEach(function (m) {
     var k = new Date(m.tsMs).toDateString();
@@ -700,6 +705,10 @@ function vistaHistorial() {
             '<span class="amt">' + (m.tipo === "ingreso" ? "+" : "−") + money(m.monto) + '</span></button>';
         }).join("") + '</section>';
     }).join("") : '<div class="empty">No hay movimientos con ese filtro.</div>') +
+    (recortado
+      ? '<button class="btn wide" type="button" data-act="vertodo" style="margin-top:16px">' +
+        'Ver los ' + restantes + ' movimientos anteriores</button>'
+      : "") +
   '</div>';
 }
 
@@ -753,8 +762,10 @@ function vistaArqueo() {
           '</div>') +
       '<button class="btn primary wide" type="button" data-act="arqueo-ok"' +
         ((S.busy || sinContar || bloqueado) ? " disabled" : "") + '>Confirmar arqueo</button>' +
-      (!ok && !sinContar && !bloqueado ? '<button class="btn wide" type="button" data-act="arqueo-ajuste"' + (S.busy ? " disabled" : "") + '>' +
-        'Confirmar y registrar el ajuste de ' + money(Math.abs(dif)) + '</button>' : "") +
+      '<button class="btn wide" type="button" data-act="arqueo-ajuste"' +
+        (S.busy ? " disabled" : "") +
+        ((ok || sinContar || bloqueado) ? " hidden" : "") + '>' +
+        'Confirmar y registrar el ajuste de ' + money(Math.abs(dif)) + '</button>' +
     '</div>' +
 
     '<div class="section-head" style="margin-top:20px"><h3 style="font-size:14px">Recuento por denominación</h3>' +
@@ -929,6 +940,7 @@ function alClic(e) {
   else if (act === "vermov") verMovimiento(b.dataset.id);
   else if (act === "exportar") exportarCSV();
   else if (act === "backup") hacerBackup();
+  else if (act === "vertodo") { S.verTodo = true; render(); }
   else if (act === "refrescar") {
     if (navigator.onLine === false) { toast("Sin conexión"); return; }
     toast("Actualizando…");
@@ -956,7 +968,9 @@ function alClic(e) {
 $("#nav").addEventListener("click", function (e) {
   var b = e.target.closest("[data-tab]"); if (!b) return;
   S.tab = b.dataset.tab; window.scrollTo(0, 0); render();
-  if (S.tab !== "registrar") refrescar();
+  // Antes cada toque de pestaña disparaba una consulta completa: 1,5 s de espera
+  // para mostrar datos que ya estaban en memoria. El sondeo y el botón de
+  // refrescar de la cabecera se encargan de mantenerlo al día.
 });
 
 /* actualizaciones parciales, para no perder el foco del teclado */
@@ -990,6 +1004,13 @@ function refrescarArqueo() {
   var bloqueado = S.pendientes.length > 0 || navigator.onLine === false;
   var bOk = document.querySelector('[data-act="arqueo-ok"]');
   if (bOk) bOk.disabled = S.busy || sinContar || bloqueado;
+
+  var bAj = document.querySelector('[data-act="arqueo-ajuste"]');
+  if (bAj) {
+    bAj.hidden = ok || sinContar || bloqueado;
+    bAj.disabled = S.busy;
+    bAj.textContent = "Confirmar y registrar el ajuste de " + money(Math.abs(dif));
+  }
 }
 
 var repT;
@@ -1016,30 +1037,12 @@ function guardarLote() {
 
   if (!items.length) { toast("Poné al menos un monto"); return; }
 
-  // El id del lote lo genera el teléfono y viaja con el pedido. Si la respuesta
-  // se pierde y hay que reintentar, el servidor reconoce que ya lo grabó y no
-  // lo duplica. Si el envío se cae a la cola, se reutiliza el mismo id.
-  var loteId = uid();
-
-  if (navigator.onLine === false) { encolarLote(items, loteId); return; }
-
-  S.busy = true; render();
-  api("registrarLote", { items: items, loteCliente: loteId }).then(function (r) {
-    S.busy = false;
-    if (r && r.ok) {
-      aplicarEstado(r.estado);
-      S.lineas = [nuevaLinea()]; ls("cf_draft", null);
-      render();
-      hojaConfirmacion(r.duplicado ? items.length : r.guardados);
-    } else {
-      render(); toast("No se pudo guardar: " + ((r && r.error) || "error"));
-    }
-  }).catch(function (err) {
-    // Si falló la red (no el servidor), va a la cola en vez de perderse.
-    if (!err || !err.error) { encolarLote(items, loteId); return; }
-    S.busy = false; render();
-    toast("No se pudo guardar: " + err.error);
-  });
+  // Siempre a la cola del teléfono, y la subida va por detrás.
+  // Apps Script no baja de ~1,5 s por llamada (medido: un `ping` que no hace
+  // nada tarda eso), así que esperar la respuesta era regalarle dos segundos de
+  // pantalla trabada a la acción que más se repite. El id del lote lo genera el
+  // teléfono, así que un reintento nunca duplica.
+  encolarLote(items, uid());
 }
 
 function encolarLote(items, loteId) {
@@ -1051,11 +1054,12 @@ function encolarLote(items, loteId) {
       S.busy = false;
       S.lineas = [nuevaLinea()]; ls("cf_draft", null);
       render();
-      hojaEnCola(items.length, res === "sin_fotos");
+      hojaGuardado(items.length, res === "sin_fotos");
+      sincronizar();                 // sube mientras el usuario ya sigue con lo suyo
     });
   }).catch(function () {
     S.busy = false; render();
-    toast("No hay conexión y el teléfono no tiene espacio para guardarlo. No cierres la app.");
+    toast("El teléfono no tiene espacio para guardarlo. No cierres la app.");
   });
 }
 
@@ -1121,7 +1125,7 @@ function exportarCSV() {
   var url = URL.createObjectURL(blob);
   var a = document.createElement("a");
   a.href = url;
-  a.download = "caja-fuerte-" + new Date().toISOString().slice(0, 10) + ".csv";
+  a.download = "caja-azul-" + new Date().toISOString().slice(0, 10) + ".csv";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
 }
@@ -1142,31 +1146,23 @@ function hoja(html) {
 function cerrarHoja() { var o = document.getElementById("ov"); if (o) o.remove(); }
 document.addEventListener("keydown", function (e) { if (e.key === "Escape") cerrarHoja(); });
 
-function hojaConfirmacion(n) {
+function hojaGuardado(n, sinFotos) {
+  var enLinea = navigator.onLine !== false;
   hoja('<div class="center" style="margin-bottom:12px">' +
-    '<div class="eyebrow">Registrado</div>' +
+    '<div class="eyebrow">Guardado</div>' +
     '<h2 style="font-size:20px;margin-top:4px">' + n + ' movimiento' + (n === 1 ? "" : "s") +
-    ' guardado' + (n === 1 ? "" : "s") + '</h2></div>' +
-    '<dl style="margin:0"><div class="tot big"><dt>Saldo en caja fuerte</dt>' +
-    '<dd class="' + (S.saldo < 0 ? "neg" : "") + '">' + money(S.saldo) + '</dd></div></dl>' +
-    '<p class="note" style="margin:12px 0">El mail con el balance ya salió' +
-    (S.config.emails ? " a " + esc(S.config.emails) : "") + '.</p>' +
-    '<button class="btn primary wide" type="button" id="ov-close">Listo</button>');
-}
-
-function hojaEnCola(n, sinFotos) {
-  hoja('<div class="center" style="margin-bottom:12px">' +
-    '<div class="eyebrow">Guardado en el teléfono</div>' +
-    '<h2 style="font-size:20px;margin-top:4px">' + n + ' movimiento' + (n === 1 ? "" : "s") +
-    ' en espera</h2></div>' +
-    '<p class="note" style="margin-bottom:12px">No hay conexión ahora mismo. ' +
-    'Se suben solos en cuanto vuelva la señal, con la fecha y hora de hoy. ' +
-    'Podés cerrar la app: no se pierden.</p>' +
-    (sinFotos ? '<div class="banner" style="margin-bottom:12px">No hubo espacio para las fotos, ' +
-      'así que se guardó solo el texto. Sacá la foto de nuevo cuando haya señal.</div>' : "") +
-    '<dl style="margin:0"><div class="tot big"><dt>Saldo con lo pendiente</dt>' +
+    ' registrado' + (n === 1 ? "" : "s") + '</h2></div>' +
+    '<dl style="margin:0"><div class="tot big"><dt>Saldo en la caja</dt>' +
     '<dd class="' + (saldoVista() < 0 ? "neg" : "") + '">' + money(saldoVista()) + '</dd></div></dl>' +
-    '<button class="btn primary wide" type="button" id="ov-close" style="margin-top:14px">Listo</button>');
+    (sinFotos ? '<div class="banner" style="margin-top:12px">No hubo espacio para las fotos, ' +
+      'así que se guardó solo el texto. Sacá la foto de nuevo más tarde.</div>' : "") +
+    '<p class="note" style="margin:12px 0">' +
+      (enLinea
+        ? 'Subiendo al servidor; el mail sale en unos segundos. No hace falta esperar.'
+        : 'Sin conexión: queda en el teléfono y sube solo cuando vuelva la señal, ' +
+          'con la fecha y hora de ahora. Podés cerrar la app.') +
+    '</p>' +
+    '<button class="btn primary wide" type="button" id="ov-close">Listo</button>');
 }
 
 function hojaPendienteDetalle(m) {
