@@ -40,7 +40,7 @@ var CATEGORIAS = ['Salarios','Proveedores','Servicios','Compras','Otros'];
  * sesión, para poder comprobar desde fuera qué código está publicado de verdad
  * en un despliegue. Súbila cada vez que cambies este archivo.
  */
-var APP_VERSION = 5;
+var APP_VERSION = 6;
 
 var LOCK_MAX_FALLOS = 5;        // fallos desde un mismo teléfono antes de bloquearlo
 var LOCK_MAX_GLOBAL = 12;       // fallos desde cualquier origen antes de bloquear todo
@@ -87,7 +87,6 @@ function doPost(e) {
       case 'anularMov':     return json_(anularMov_(req, usuario));
       case 'guardarArqueo': return json_(guardarArqueo_(req, usuario));
       case 'foto':          return json_(leerFoto_(req));
-      case 'addPersona':    return json_(addPersona_(req, usuario));
       case 'setConfig':     return json_(setConfigPublica_(req, usuario));
       case 'auditoria':     return json_(leerAuditoria_(req));
       case 'backup':        return json_(backupAhora_(usuario));
@@ -842,15 +841,6 @@ function guardarArqueo_(req, usuario) {
 /* ================================================================
  *  PERSONAS, CONFIG, AUDITORÍA
  * ================================================================ */
-
-function addPersona_(req, usuario) {
-  var nombre = String(req.nombre || '').trim().slice(0, 40);
-  if (nombre.length < 2) return { ok: false, error: 'nombre_corto' };
-  registrarPersona_(nombre);
-  auditar_(usuario, 'alta_persona', 'persona', nombre, '', '', '');
-  bumpRev_();
-  return { ok: true, estado: estado_() };
-}
 
 /** Claves que la app puede cambiar. El salt y las carpetas quedan fuera. */
 function setConfigPublica_(req, usuario) {

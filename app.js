@@ -16,7 +16,7 @@ var S = {
   lineas: [], tipoDefault: "ingreso",
   filtro: { tipo: "todos", categoria: "todas", persona: "todas", q: "" }, verTodo: false,
   conteo: {}, arqueoNota: "", arqueoManual: "",
-  pantalla: "cargando", loginErr: "", busy: false, ultimaSync: 0,
+  pantalla: "cargando", loginErr: "", loginNombre: "", busy: false, ultimaSync: 0,
   pendientes: [], rev: -1
 };
 
@@ -416,7 +416,7 @@ function pantallaHTML() {
     return '<div class="center"><div class="eyebrow">Caja Azul</div><h1 class="h-lg">Conectando…</h1></div>';
   }
 
-  var recordado = ls("cf_nombre") || "";
+  var recordado = S.loginNombre || ls("cf_nombre") || "";
   return '<div class="center"><div class="eyebrow">Caja Azul</div>' +
     '<h1 class="h-lg">Entrar</h1>' +
     '<p class="note" style="margin-top:6px">Tu nombre queda en cada movimiento que cargues.</p></div>' +
@@ -441,6 +441,7 @@ function enlazarPantalla() {
     ev.preventDefault();
     if (S.busy) return;
     var nombre = f.nombre.value.trim(), pass = f.password.value;
+    S.loginNombre = nombre;
     if (nombre.length < 2 || !pass) { S.loginErr = "Poné tu nombre y la contraseña."; render(); return; }
 
     S.busy = true; S.loginErr = ""; render();
@@ -452,7 +453,7 @@ function enlazarPantalla() {
     }).then(function (r) { return r.json(); }).then(function (j) {
       S.busy = false;
       if (j && j.ok) {
-        S.token = j.token; S.nombre = j.nombre;
+        S.token = j.token; S.nombre = j.nombre; S.loginNombre = "";
         ls("cf_token", j.token); ls("cf_nombre", j.nombre);
         aplicarEstado(j.estado);
         S.pantalla = "app"; S.loginErr = "";
@@ -468,6 +469,11 @@ function enlazarPantalla() {
       S.busy = false; S.loginErr = "No se pudo conectar con el servidor."; render();
     });
   });
+
+  if (f && S.loginErr) {
+    var pw = document.getElementById("lg-pass");
+    if (pw) { try { pw.focus(); } catch (e) {} }
+  }
 
   var re = document.querySelector('[data-p="reintentar"]');
   if (re) re.addEventListener("click", function () {
@@ -491,7 +497,7 @@ function cerrarSesion(silencioso) {
 function cabeceraHTML() {
   var saldo = saldoVista();
   var nPend = S.pendientes.reduce(function (a, l) { return a + l.items.length; }, 0);
-  var alDia = (Date.now() - S.ultimaSync) < 90000;
+  var alDia = (Date.now() - S.ultimaSync) < 150000;   // holgura sobre el sondeo de 90 s
   var enLinea = navigator.onLine !== false;
 
   var clase, texto;
@@ -681,8 +687,12 @@ function vistaHistorial() {
                        .reduce(function (a, m) { return a + m.monto; }, 0);
       var ret = d.items.filter(function (m) { return m.tipo === "retiro" && m.estado !== "anulado"; })
                        .reduce(function (a, m) { return a + m.monto; }, 0);
-      var resumen = (ing || ret)
-        ? '+' + money(ing) + ' · −' + money(ret)
+      // Un día con solo ingresos no necesita mostrar "−0,00 €": ocupa lugar y
+      // en pantallas angostas empuja la fecha a dos líneas.
+      var partes = [];
+      if (ing) partes.push("+" + money(ing));
+      if (ret) partes.push("−" + money(ret));
+      var resumen = partes.length ? partes.join(" · ")
         : d.items.length + (d.items.length === 1 ? " anulado" : " anulados");
       return '<section class="day"><div class="day-head"><h3>' + esc(fechaDia(d.ms)) + '</h3>' +
         '<div class="num">' + resumen + '</div></div>' +

@@ -15,6 +15,7 @@ Funciona desde el móvil de cualquier persona del equipo con una contraseña com
 | | |
 |---|---|
 | **Registro en lote** | Varios montos con su concepto en una sola carga: te identificás una vez y cargás todo junto. |
+| **Guardado instantáneo** | Registrar no espera al servidor: se guarda en el teléfono y sube por detrás. Apps Script no baja de ~1,5 s por llamada, así que esperarlo era regalar dos segundos de pantalla trabada. |
 | **Categorías rápidas** | Salarios, Proveedores, Servicios, Compras, Otros. En salarios y proveedores aparece además el campo de a quién se le entregó. |
 | **Fotos** | Hasta 6 por movimiento, comprimidas en el teléfono antes de subir. Quedan **privadas** en tu Drive: la app las pide al servidor, nunca por enlace público. |
 | **Mail automático** | Sale solo en cada movimiento, en cada arqueo y en cada edición o anulación. No hay resumen diario: solo avisa cuando pasa algo. |
@@ -126,7 +127,7 @@ Si los seis pasos salen bien, está todo conectado.
 1. **Backend**: pegá el `backend/Codigo.gs` nuevo en el editor, guardá y ejecutá **`instalar()`**. Es seguro: respeta la contraseña, las carpetas y los ajustes; solo agrega lo que falte.
 2. **Publicar el cambio**: Implementar → **Gestionar implementaciones** → editar (lápiz) → **Versión: Nueva** → Implementar. La URL no cambia. Si creás una implementación nueva en vez de editar la existente, te da otra URL y tenés que rehacer el `config.js`.
 3. **Comprobar**: abrí la URL del `/exec` en el navegador. El `version` que devuelve tiene que coincidir con el `APP_VERSION` del `Codigo.gs` que pegaste. Si no coincide, el despliegue está sirviendo código viejo.
-4. **Frontend**: subí los archivos y **subí `VERSION` en `sw.js`** (`'v2'` → `'v3'`). Sin eso, los teléfonos que ya tienen la app instalada siguen con la versión vieja.
+4. **Frontend**: subí los archivos y **subí `VERSION` en `sw.js`** (`'v4'` → `'v5'`). Sin eso, los teléfonos que ya tienen la app instalada siguen con la versión vieja.
 
 ---
 
@@ -157,6 +158,14 @@ iconos/               iconos de la app
 backend/
   Codigo.gs           el Apps Script entero
 ```
+
+### Por qué guardar no espera al servidor
+
+Medido contra el backend real, seis llamadas seguidas a `ping` —que no lee ni una fila— dieron 2172, 1956, 1565, 1477, 1554 y 1817 ms. Ese es el piso de Apps Script: el redirect interno de Google antes de ejecutar el script. No depende del código ni del tamaño de la hoja, y no se puede bajar.
+
+Por eso **todo lote va primero a la cola del teléfono y sube por detrás**, haya señal o no. Es el mismo camino que el modo sin conexión, y es seguro porque el id del lote lo genera el teléfono: un reintento nunca duplica. El mail sale cuando el servidor recibe, un par de segundos después.
+
+Por la misma razón, cambiar de pestaña no dispara ninguna consulta: los datos ya están en memoria.
 
 ### El sondeo y la cuota de Google
 
