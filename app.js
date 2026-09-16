@@ -277,6 +277,33 @@ function sincronizar() {
   });
 }
 
+/**
+ * Último intento cuando el teléfono se guarda en el bolsillo.
+ * `keepalive` deja que el pedido siga viajando aunque la página muera, cosa que
+ * un fetch normal no hace: si el usuario confirma y bloquea la pantalla al
+ * instante, el envío se cortaba a mitad y el lote quedaba esperando al próximo
+ * arranque. No sacamos nada de la cola porque no vemos la respuesta; si llega,
+ * el servidor reconoce el `loteCliente` y no lo duplica.
+ * El tope de `keepalive` ronda los 64 KB, así que los lotes con fotos no entran.
+ */
+function flushAlCerrar() {
+  if (!S.token || !S.pendientes.length || navigator.onLine === false) return;
+  S.pendientes.forEach(function (lote) {
+    var cuerpo = JSON.stringify({
+      accion: "registrarLote", token: S.token, usuario: lote.usuario,
+      items: lote.items, tsClienteMs: lote.tsMs, offline: true, loteCliente: lote.id
+    });
+    if (cuerpo.length > 58000) return;
+    try {
+      fetch(CFG.API, {
+        method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: cuerpo, keepalive: true
+      }).catch(function () {});
+    } catch (e) {}
+  });
+}
+window.addEventListener("pagehide", flushAlCerrar);
+
 window.addEventListener("online", function () {
   if (S.pantalla === "app") { render(); sincronizar().then(refrescar); }
 });
@@ -370,7 +397,8 @@ setInterval(function () {
 }, 90000);
 
 document.addEventListener("visibilitychange", function () {
-  if (!document.hidden && S.pantalla === "app") sincronizar().then(comprobarVersion);
+  if (document.hidden) { flushAlCerrar(); return; }
+  if (S.pantalla === "app") sincronizar().then(comprobarVersion);
 });
 
 /* ================= render ================= */
@@ -386,7 +414,7 @@ function render() {
   }
 
   pant.classList.add("hidden"); main.classList.remove("hidden"); nav.classList.remove("hidden");
-  main.innerHTML = cabeceraHTML() + (
+  main.innerHTML = cabeceraHTML() + avisoPendientesHTML() + (
     S.tab === "registrar" ? vistaRegistrar() :
     S.tab === "historial" ? vistaHistorial() :
     S.tab === "arqueo"    ? vistaArqueo()    : vistaAjustes()
@@ -527,6 +555,29 @@ function cabeceraHTML() {
       '<span class="dot ' + clase + '"></span>' + esc(texto) +
       '<span class="recargar" aria-hidden="true">↻</span></button>' +
     '</header>';
+}
+
+/**
+ * Si un lote lleva más de un rato sin subir, deja de ser un detalle de la
+ * cabecera y pasa a ser un cartel en todas las pantallas. La cola vive en ESTE
+ * teléfono: mientras no suba, el resto del equipo ve un saldo que no es.
+ */
+function avisoPendientesHTML() {
+  if (!S.pendientes.length) return "";
+  var viejo = S.pendientes[0];
+  if (Date.now() - viejo.tsMs < 15 * 60000) return "";
+
+  var n = S.pendientes.reduce(function (a, l) { return a + l.items.length; }, 0);
+  var horas = Math.floor((Date.now() - viejo.tsMs) / 36e5);
+  var cuando = horas < 1 ? "hace un rato" : (horas < 24 ? "hace " + horas + " h" : "de ayer o antes");
+
+  return '<div class="banner malo" style="margin-top:14px">' +
+    '<b>' + n + (n === 1 ? " movimiento sin subir" : " movimientos sin subir") + ", " + cuando + '.</b><br>' +
+    'Están guardados solo en este teléfono, así que el resto del equipo ve un saldo que no es el real. ' +
+    (navigator.onLine === false
+      ? "Suben solos en cuanto haya señal."
+      : '<button class="btn sm" type="button" data-act="subir-cola" style="margin-top:8px">Subirlos ahora</button>') +
+    '</div>';
 }
 
 /* ---------- registrar ---------- */
@@ -1064,7 +1115,7 @@ function encolarLote(items, loteId) {
       S.busy = false;
       S.lineas = [nuevaLinea()]; ls("cf_draft", null);
       render();
-      hojaGuardado(items.length, res === "sin_fotos");
+      hojaGuardado(items.length, res === "sin_fotos", lote.id);
       sincronizar();                 // sube mientras el usuario ya sigue con lo suyo
     });
   }).catch(function () {
@@ -1156,9 +1207,16 @@ function hoja(html) {
 function cerrarHoja() { var o = document.getElementById("ov"); if (o) o.remove(); }
 document.addEventListener("keydown", function (e) { if (e.key === "Escape") cerrarHoja(); });
 
-function hojaGuardado(n, sinFotos) {
+/**
+ * La confirmación muestra si el movimiento ya llegó al servidor.
+ * Antes decía "guardado" y se iba: el usuario cerraba la app en el mismo
+ * segundo y el envío moría a mitad de camino. Ahora la pantalla espera esos dos
+ * segundos por vos —sin trabarse— y recién entonces dice que está arriba.
+ */
+function hojaGuardado(n, sinFotos, loteId) {
   var enLinea = navigator.onLine !== false;
-  hoja('<div class="center" style="margin-bottom:12px">' +
+
+  var ov = hoja('<div class="center" style="margin-bottom:12px">' +
     '<div class="eyebrow">Guardado</div>' +
     '<h2 style="font-size:20px;margin-top:4px">' + n + ' movimiento' + (n === 1 ? "" : "s") +
     ' registrado' + (n === 1 ? "" : "s") + '</h2></div>' +
@@ -1166,13 +1224,42 @@ function hojaGuardado(n, sinFotos) {
     '<dd class="' + (saldoVista() < 0 ? "neg" : "") + '">' + money(saldoVista()) + '</dd></div></dl>' +
     (sinFotos ? '<div class="banner" style="margin-top:12px">No hubo espacio para las fotos, ' +
       'así que se guardó solo el texto. Sacá la foto de nuevo más tarde.</div>' : "") +
-    '<p class="note" style="margin:12px 0">' +
+    '<div id="ov-subida" class="subida' + (enLinea ? "" : " esperando") + '" style="margin-top:14px">' +
+      '<span class="dot ' + (enLinea ? "" : "bad") + '"></span>' +
+      '<span id="ov-subida-txt">' + (enLinea ? "Subiendo al servidor…" : "Sin conexión") + '</span>' +
+    '</div>' +
+    '<p class="note" style="margin:10px 0 0" id="ov-subida-nota">' +
       (enLinea
-        ? 'Subiendo al servidor; el mail sale en unos segundos. No hace falta esperar.'
-        : 'Sin conexión: queda en el teléfono y sube solo cuando vuelva la señal, ' +
-          'con la fecha y hora de ahora. Podés cerrar la app.') +
+        ? "Esperá un momento a que confirme. Si cerrás antes, queda en el teléfono y sube después."
+        : "Queda en el teléfono y sube solo cuando vuelva la señal, con la fecha y hora de ahora.") +
     '</p>' +
-    '<button class="btn primary wide" type="button" id="ov-close">Listo</button>');
+    '<div class="stack" style="margin-top:14px">' +
+      '<button class="btn primary wide" type="button" id="ov-ok"' + (enLinea ? " disabled" : "") + '>' +
+        (enLinea ? "Subiendo…" : "Listo") + '</button>' +
+      (enLinea ? '<button class="btn ghost wide" type="button" id="ov-close">Cerrar sin esperar</button>' : "") +
+    '</div>');
+
+  var ok = ov.querySelector("#ov-ok");
+  if (ok) ok.addEventListener("click", cerrarHoja);
+  if (!enLinea) return;
+
+  var t = setInterval(function () {
+    if (!document.getElementById("ov")) { clearInterval(t); return; }
+    if (S.pendientes.some(function (l) { return l.id === loteId; })) return;
+
+    clearInterval(t);
+    var caja = document.getElementById("ov-subida");
+    var txt = document.getElementById("ov-subida-txt");
+    var nota = document.getElementById("ov-subida-nota");
+    var b = document.getElementById("ov-ok");
+    var cerrar = document.getElementById("ov-close");
+    if (caja) caja.className = "subida hecha";
+    if (caja) caja.firstChild.className = "dot ok";
+    if (txt) txt.textContent = "Subido al servidor";
+    if (nota) nota.textContent = "El mail con el balance ya salió.";
+    if (b) { b.disabled = false; b.textContent = "Listo"; }
+    if (cerrar) cerrar.remove();
+  }, 400);
 }
 
 function hojaPendienteDetalle(m) {

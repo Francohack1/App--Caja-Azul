@@ -137,6 +137,12 @@ Si los seis pasos salen bien, está todo conectado.
 - **Arqueo** — contá el efectivo por denominación y confirmá. Si no cuadra, podés registrar el ajuste en el mismo paso.
 - **Corregir algo** — tocá el movimiento en el historial, **Editar** o **Anular**, y escribí el motivo. Nada se borra.
 
+### Cuándo está realmente arriba
+
+Guardar es instantáneo porque el movimiento se escribe primero en el teléfono. La pantalla de confirmación te muestra cuándo llegó al servidor: dice **«Subiendo al servidor…»** y a los dos segundos pasa a **«Subido al servidor»** en verde. Podés cerrar antes con «Cerrar sin esperar» —no se pierde nada, sube después— pero si esperás esos dos segundos tenés la certeza en el momento.
+
+Si algo queda sin subir más de 15 minutos, aparece un cartel rojo en todas las pantallas: la cola vive en **ese** teléfono, así que mientras no suba el resto del equipo ve un saldo que no es el real.
+
 ### Sin señal
 
 Cargá igual. Los movimientos quedan en ámbar con la etiqueta **sin subir**, el saldo de arriba ya los cuenta, y suben solos en cuanto vuelve la red — con la fecha y hora reales de cuando los cargaste, no de cuando subieron. Podés cerrar la app sin perder nada.

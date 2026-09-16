@@ -210,6 +210,13 @@ textarea.inp{min-height:64px; resize:vertical}
 .diff-box strong{display:block; font-family:'IBM Plex Mono',monospace; font-size:26px;
   font-weight:600; letter-spacing:-.02em}
 
+/* ---------- estado de subida en la confirmación ---------- */
+.subida{display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:var(--r-sm);
+  border:1px solid var(--line-strong); background:var(--surface-2);
+  font-size:13px; font-weight:600; color:var(--ink-2)}
+.subida.hecha{border-color:var(--in); background:var(--in-soft); color:var(--in)}
+.subida.esperando{border-color:var(--warn); background:var(--warn-soft); color:var(--warn)}
+
 /* ---------- auditoría ---------- */
 .aud{border-bottom:1px dotted var(--line-strong); padding:10px 0; font-size:13px}
 .aud b{font-size:13px}
