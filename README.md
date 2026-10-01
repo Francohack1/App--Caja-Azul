@@ -134,7 +134,11 @@ Si los seis pasos salen bien, está todo conectado.
 ## Cada día
 
 - **Cargar movimientos** — elegí Ingreso o Retiro, poné el monto, tocá la categoría, escribí el concepto y sacá la foto. «Agregar otro monto» para seguir sumando líneas. Todo se guarda de una.
-- **Arqueo** — contá el efectivo por denominación y confirmá. Si no cuadra, podés registrar el ajuste en el mismo paso.
+- **Arqueo** — contá el efectivo por denominación. Si cuadra, un solo botón: **Confirmar arqueo**. Si no cuadra, aparecen dos caminos y hacen cosas distintas:
+  - **Cuadrar la caja** agrega un movimiento «Ajuste por arqueo» para que el saldo coincida con lo que contaste. Es lo que querés casi siempre.
+  - **Anotar la diferencia sin tocar el saldo** deja el arqueo registrado pero no mueve nada. Sirve cuando sospechás que falta cargar un movimiento y lo querés buscar antes de dar la plata por perdida.
+
+  Confirmar un arqueo **nunca** ajusta el saldo por su cuenta: un recuento es una observación, no un movimiento. Si lo que falta es que alguien no registró un retiro, taparlo con un ajuste genérico borra el rastro.
 - **Corregir algo** — tocá el movimiento en el historial, **Editar** o **Anular**, y escribí el motivo. Nada se borra.
 
 ### Cuándo está realmente arriba

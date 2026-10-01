@@ -821,12 +821,22 @@ function vistaArqueo() {
             '<span style="font-size:12.5px;font-weight:600">' +
               (ok ? "Cuadra" : (dif > 0 ? "Sobra efectivo" : "Falta efectivo")) + '</span>' +
           '</div>') +
-      '<button class="btn primary wide" type="button" data-act="arqueo-ok"' +
-        ((S.busy || sinContar || bloqueado) ? " disabled" : "") + '>Confirmar arqueo</button>' +
-      '<button class="btn wide" type="button" data-act="arqueo-ajuste"' +
+      // Con diferencia, la acción destacada es la que cuadra la caja. Antes el
+      // botón principal era el que NO tocaba el saldo y se leía como "listo,
+      // todo arreglado": contabas, confirmabas, y el saldo no se movía.
+      '<button class="btn primary wide" type="button" data-act="arqueo-ajuste"' +
         (S.busy ? " disabled" : "") +
         ((ok || sinContar || bloqueado) ? " hidden" : "") + '>' +
-        'Confirmar y registrar el ajuste de ' + money(Math.abs(dif)) + '</button>' +
+        'Cuadrar la caja · ajuste de ' + money(Math.abs(dif)) + '</button>' +
+      '<button class="btn' + ((ok || sinContar || bloqueado) ? " primary" : "") + ' wide" ' +
+        'type="button" data-act="arqueo-ok"' +
+        ((S.busy || sinContar || bloqueado) ? " disabled" : "") + '>' +
+        ((ok || sinContar || bloqueado) ? "Confirmar arqueo" : "Anotar la diferencia sin tocar el saldo") +
+      '</button>' +
+      '<p class="note" id="arq-explica"' + ((ok || sinContar || bloqueado) ? " hidden" : "") + '>' +
+        '<b>Cuadrar la caja</b> agrega un movimiento de ajuste para que el saldo coincida con el efectivo que contaste. ' +
+        '<b>Anotar la diferencia</b> deja el arqueo registrado pero el saldo queda como está: sirve cuando sospechás ' +
+        'que falta cargar un movimiento y lo querés buscar antes de dar la diferencia por perdida.</p>' +
     '</div>' +
 
     '<div class="section-head" style="margin-top:20px"><h3 style="font-size:14px">Recuento por denominación</h3>' +
@@ -1063,15 +1073,24 @@ function refrescarArqueo() {
       : (ok ? "Cuadra" : (dif > 0 ? "Sobra efectivo" : "Falta efectivo"));
   }
   var bloqueado = S.pendientes.length > 0 || navigator.onLine === false;
-  var bOk = document.querySelector('[data-act="arqueo-ok"]');
-  if (bOk) bOk.disabled = S.busy || sinContar || bloqueado;
+  var soloAnotar = ok || sinContar || bloqueado;
 
   var bAj = document.querySelector('[data-act="arqueo-ajuste"]');
   if (bAj) {
-    bAj.hidden = ok || sinContar || bloqueado;
+    bAj.hidden = soloAnotar;
     bAj.disabled = S.busy;
-    bAj.textContent = "Confirmar y registrar el ajuste de " + money(Math.abs(dif));
+    bAj.textContent = "Cuadrar la caja · ajuste de " + money(Math.abs(dif));
   }
+
+  var bOk = document.querySelector('[data-act="arqueo-ok"]');
+  if (bOk) {
+    bOk.disabled = S.busy || sinContar || bloqueado;
+    bOk.className = "btn" + (soloAnotar ? " primary" : "") + " wide";
+    bOk.textContent = soloAnotar ? "Confirmar arqueo" : "Anotar la diferencia sin tocar el saldo";
+  }
+
+  var exp = document.getElementById("arq-explica");
+  if (exp) exp.hidden = soloAnotar;
 }
 
 var repT;
@@ -1140,7 +1159,8 @@ function guardarArqueo(conAjuste) {
       S.conteo = {}; S.arqueoManual = ""; S.arqueoNota = "";
       render();
       toast(Math.abs(r.diferencia) < 0.005 ? "Arqueo guardado: la caja cuadra"
-        : (conAjuste ? "Arqueo y ajuste registrados" : "Arqueo guardado con diferencia"));
+        : (conAjuste ? "Caja cuadrada: se registró el ajuste"
+                     : "Diferencia anotada · el saldo quedó como estaba"));
     } else { render(); toast("No se pudo guardar el arqueo"); }
   }).catch(function () { S.busy = false; render(); toast("No se pudo guardar el arqueo"); });
 }

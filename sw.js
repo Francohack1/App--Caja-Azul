@@ -8,7 +8,7 @@
    así los teléfonos que ya tienen la app se quedan con la nueva.
    ------------------------------------------------------------------ */
 
-const VERSION = 'v6';
+const VERSION = 'v7';
 const SHELL = 'caja-shell-' + VERSION;
 const FUENTES = 'caja-fuentes-' + VERSION;
 
